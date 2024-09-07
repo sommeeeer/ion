@@ -63,48 +63,48 @@ export interface SsrSiteArgs extends BaseSsrSiteArgs {
   invalidation?: Input<
     | false
     | {
-        /**
-         * Configure if `sst deploy` should wait for the CloudFront cache invalidation to finish.
-         *
-         * :::tip
-         * For non-prod environments it might make sense to pass in `false`.
-         * :::
-         *
-         * Waiting for this process to finish ensures that new content will be available after the deploy finishes. However, this process can sometimes take more than 5 mins.
-         * @default `false`
-         * @example
-         * ```js
-         * {
-         *   invalidation: {
-         *     wait: true
-         *   }
-         * }
-         * ```
-         */
-        wait?: Input<boolean>;
-        /**
-         * The paths to invalidate.
-         *
-         * You can either pass in an array of glob patterns to invalidate specific files. Or you can use one of these built-in options:
-         * - `all`: All files will be invalidated when any file changes
-         * - `versioned`: Only versioned files will be invalidated when versioned files change
-         *
-         * :::note
-         * Each glob pattern counts as a single invalidation. However, invalidating `all` counts as a single invalidation as well.
-         * :::
-         * @default `"all"`
-         * @example
-         * Invalidate the `index.html` and all files under the `products/` route. This counts as two invalidations.
-         * ```js
-         * {
-         *   invalidation: {
-         *     paths: ["/index.html", "/products/*"]
-         *   }
-         * }
-         * ```
-         */
-        paths?: Input<"all" | "versioned" | string[]>;
-      }
+      /**
+       * Configure if `sst deploy` should wait for the CloudFront cache invalidation to finish.
+       *
+       * :::tip
+       * For non-prod environments it might make sense to pass in `false`.
+       * :::
+       *
+       * Waiting for this process to finish ensures that new content will be available after the deploy finishes. However, this process can sometimes take more than 5 mins.
+       * @default `false`
+       * @example
+       * ```js
+       * {
+       *   invalidation: {
+       *     wait: true
+       *   }
+       * }
+       * ```
+       */
+      wait?: Input<boolean>;
+      /**
+       * The paths to invalidate.
+       *
+       * You can either pass in an array of glob patterns to invalidate specific files. Or you can use one of these built-in options:
+       * - `all`: All files will be invalidated when any file changes
+       * - `versioned`: Only versioned files will be invalidated when versioned files change
+       *
+       * :::note
+       * Each glob pattern counts as a single invalidation. However, invalidating `all` counts as a single invalidation as well.
+       * :::
+       * @default `"all"`
+       * @example
+       * Invalidate the `index.html` and all files under the `products/` route. This counts as two invalidations.
+       * ```js
+       * {
+       *   invalidation: {
+       *     paths: ["/index.html", "/products/*"]
+       *   }
+       * }
+       * ```
+       */
+      paths?: Input<"all" | "versioned" | string[]>;
+    }
   >;
   /**
    * Configure the Lambda function used for server.
@@ -209,6 +209,10 @@ export interface SsrSiteArgs extends BaseSsrSiteArgs {
      * Transform the CloudFront CDN resource.
      */
     cdn?: Transform<CdnArgs>;
+  };
+  httpBasicAuth?: {
+    username: string;
+    password: string;
   };
 }
 
@@ -405,13 +409,13 @@ export function createServersAndDistribution(
               // versioned files
               ...(copy.versionedSubDir
                 ? [
-                    {
-                      files: path.posix.join(copy.versionedSubDir, "**"),
-                      cacheControl:
-                        assets?.versionedFilesCacheHeader ??
-                        `public,max-age=${versionedFilesTTL},immutable`,
-                    },
-                  ]
+                  {
+                    files: path.posix.join(copy.versionedSubDir, "**"),
+                    cacheControl:
+                      assets?.versionedFilesCacheHeader ??
+                      `public,max-age=${versionedFilesTTL},immutable`,
+                  },
+                ]
                 : []),
               ...(assets?.fileOptions ?? []),
             ];
@@ -508,6 +512,20 @@ export function createServersAndDistribution(
       return `${mime}${charset}`;
     }
 
+    function createHttpBasicAuthFunction() {
+      const basicAuth = Buffer.from(`${args.httpBasicAuth?.username}:${args.httpBasicAuth?.password}`).toString("base64");
+
+      return `if (request?.headers?.authorization?.value !== 'Basic ${basicAuth}') {
+        return {
+          statusCode: 401,
+          statusDescription: "Unauthorized",
+          headers: {
+            "www-authenticate": { value: 'Basic realm="Secure Area"' },
+          },
+        };
+      }\n`;
+    }
+
     function createCloudFrontFunctions() {
       const functions: Record<string, cloudfront.Function> = {};
 
@@ -520,6 +538,7 @@ export function createServersAndDistribution(
               code: `
 function handler(event) {
   var request = event.request;
+  ${args.httpBasicAuth ? createHttpBasicAuthFunction() : ""}
   ${injections.join("\n")}
   return request;
 }`,
@@ -760,11 +779,11 @@ function handler(event) {
           cachePolicyId: "658327ea-f89d-4fab-a63d-7e88639e58f6",
           functionAssociations: cfFunction
             ? [
-                {
-                  eventType: "viewer-request",
-                  functionArn: cfFunction.arn,
-                },
-              ]
+              {
+                eventType: "viewer-request",
+                functionArn: cfFunction.arn,
+              },
+            ]
             : [],
         };
       } else if (behavior.cacheType === "server") {
@@ -787,20 +806,20 @@ function handler(event) {
           originRequestPolicyId: "b689b0a8-53d0-40ab-baf2-68738e2966ac",
           functionAssociations: cfFunction
             ? [
-                {
-                  eventType: "viewer-request",
-                  functionArn: cfFunction.arn,
-                },
-              ]
+              {
+                eventType: "viewer-request",
+                functionArn: cfFunction.arn,
+              },
+            ]
             : [],
           lambdaFunctionAssociations: edgeFunction
             ? [
-                {
-                  includeBody: true,
-                  eventType: "origin-request",
-                  lambdaArn: edgeFunction.nodes.function.qualifiedArn,
-                },
-              ]
+              {
+                includeBody: true,
+                eventType: "origin-request",
+                lambdaArn: edgeFunction.nodes.function.qualifiedArn,
+              },
+            ]
             : [],
         };
       }
@@ -825,14 +844,14 @@ function handler(event) {
               headersConfig:
                 (plan.serverCachePolicy?.allowedHeaders ?? []).length > 0
                   ? {
-                      headerBehavior: "whitelist",
-                      headers: {
-                        items: plan.serverCachePolicy?.allowedHeaders,
-                      },
-                    }
-                  : {
-                      headerBehavior: "none",
+                    headerBehavior: "whitelist",
+                    headers: {
+                      items: plan.serverCachePolicy?.allowedHeaders,
                     },
+                  }
+                  : {
+                    headerBehavior: "none",
+                  },
               queryStringsConfig: {
                 queryStringBehavior: "all",
               },
@@ -855,11 +874,11 @@ function handler(event) {
         `  });`,
         ...(streaming
           ? [
-              `  const response = await p;`,
-              `  responseStream.write(JSON.stringify(response));`,
-              `  responseStream.end();`,
-              `  return;`,
-            ]
+            `  const response = await p;`,
+            `  responseStream.write(JSON.stringify(response));`,
+            `  responseStream.end();`,
+            `  return;`,
+          ]
           : [`  return p;`]),
         `}`,
       ].join("\n");
