@@ -18,14 +18,12 @@ import (
 	"github.com/briandowns/spinner"
 	"github.com/fatih/color"
 	"github.com/sst/ion/cmd/sst/cli"
-	"github.com/sst/ion/cmd/sst/mosaic/dev"
 	"github.com/sst/ion/cmd/sst/mosaic/errors"
 	"github.com/sst/ion/cmd/sst/mosaic/ui"
 	"github.com/sst/ion/internal/util"
 	"github.com/sst/ion/pkg/global"
 	"github.com/sst/ion/pkg/project"
 	"github.com/sst/ion/pkg/project/provider"
-	"github.com/sst/ion/pkg/server"
 	"github.com/sst/ion/pkg/telemetry"
 )
 
@@ -74,6 +72,7 @@ func main() {
 			slog.Error("exited with error", "err", err)
 			ui.Error("Unexpected error occurred. Please check the logs in .sst/log/sst.log")
 		}
+		telemetry.Close()
 		os.Exit(1)
 		return
 	}
@@ -437,6 +436,22 @@ var root = &cli.Command{
 				Long: strings.Join([]string{
 					"Deploy your application. By default, it deploys to your personal stage.",
 					"",
+					"All the resources are deployed as concurrently as possible, based on their dependencies.",
+					"For resources like your sites and functions; it first builds them and then deploys the generated assets.",
+					"",
+					"Since the build processes for some of these resources, like Next.js, take a lot of memory, the concurrency is limited by default of 4.",
+					"You can change this by setting the `SST_BUILD_CONCURRENCY` environment variable.",
+					"",
+					"```bash frame=\"none\"",
+					"SST_BUILD_CONCURRENCY=8 sst deploy",
+					"```",
+					"",
+					"You can change this based on how much memory your CI environment has.",
+					"",
+					":::tip",
+					"You can turn down the build concurrency if you are running out of memory in CI.",
+					":::",
+					"",
 					"Optionally, deploy your app to a specific stage.",
 					"",
 					"```bash frame=\"none\"",
@@ -552,7 +567,7 @@ var root = &cli.Command{
 					"```ts title=\"sst.config.ts\"",
 					"{",
 					"  providers: {",
-					"    aws: true",
+					"    aws: \"6.27.0\"",
 					"  }",
 					"}",
 					"```",
@@ -563,21 +578,19 @@ var root = &cli.Command{
 					"Running `sst add aws` above is the same as manually adding the provider to your config and running `sst install`.",
 					":::",
 					"",
-					"By default, the latest version of the provider is installed. If you want to use a specific version, you can set it in your config.",
+					"By default, the latest version of the provider is installed. If you want to use a specific version, you can change it in your config.",
 					"",
 					"```ts title=\"sst.config.ts\"",
 					"{",
 					"  providers: {",
 					"    aws: {",
-					"      version: \"6.27.0\"",
+					"      version: \"6.26.0\"",
 					"    }",
 					"  }",
 					"}",
 					"```",
 					"",
-					":::tip",
-					"You'll need to run `sst install` after you update the `providers` in your config.",
-					":::",
+					"You'll need to run `sst install` if you update the `providers` in your config.",
 				}, "\n"),
 			},
 			Args: []cli.Argument{
@@ -618,8 +631,11 @@ var root = &cli.Command{
 						return err
 					}
 				}
-
-				err = p.Add(pkg)
+				entry, err := project.FindProvider(pkg, "latest")
+				if err != nil {
+					return util.NewReadableError(err, "Could not find provider "+pkg)
+				}
+				err = p.Add(entry.Name, entry.Version)
 				if err != nil {
 					return err
 				}
@@ -637,7 +653,7 @@ var root = &cli.Command{
 					return err
 				}
 				spin.Stop()
-				ui.Success(fmt.Sprintf("Added provider \"%s\"", pkg))
+				ui.Success(fmt.Sprintf("Added provider \"%s\". You can create resources with `new %s.SomeResource()`", entry.Alias, entry.Alias))
 				return nil
 			},
 		},
@@ -704,246 +720,28 @@ var root = &cli.Command{
 			Name: "secret",
 			Description: cli.Description{
 				Short: "Manage secrets",
-				Long:  "Manage the secrets in your app defined with `sst.Secret`.",
+				Long: strings.Join([]string{
+					"Manage the secrets in your app defined with `sst.Secret`.",
+					"",
+					"The `--fallback` flag can be used to manage the fallback values of a secret.",
+					"Applies to all the sub-commands in `sst secret`.",
+				}, "\n"),
+			},
+			Flags: []cli.Flag{
+				{
+					Name: "fallback",
+					Type: "bool",
+					Description: cli.Description{
+						Short: "Manage the fallback values of secrets",
+						Long:  "Manage the fallback values of secrets.",
+					},
+				},
 			},
 			Children: []*cli.Command{
-				{
-					Name: "set",
-					Description: cli.Description{
-						Short: "Set a secret",
-						Long: strings.Join([]string{
-							"Set the value of the secret.",
-							"",
-							"The secrets are encrypted and stored in an S3 Bucket in your AWS account. They are also stored in the package of the functions using the secret.",
-							"",
-							":::tip",
-							"If you are not running `sst dev`, you'll need to `sst deploy` to apply the secret.",
-							":::",
-							"",
-							"For example, set the `sst.Secret` called `StripeSecret` to `123456789`.",
-							"",
-							"```bash frame=\"none\"",
-							"sst secret set StripeSecret dev_123456789",
-							"```",
-							"",
-							"Optionally, set the secret in a specific stage.",
-							"",
-							"```bash frame=\"none\"",
-							"sst secret set StripeSecret prod_123456789 --stage production",
-							"```",
-							"",
-							"To set something like an RSA key, you can first save it to a file.",
-							"",
-							"```bash frame=\"none\"",
-							"cat > tmp.txt <<EOF",
-							"-----BEGIN RSA PRIVATE KEY-----",
-							"MEgCQQCo9+BpMRYQ/dL3DS2CyJxRF+j6ctbT3/Qp84+KeFhnii7NT7fELilKUSnx",
-							"S30WAvQCCo2yU1orfgqr41mM70MBAgMBAAE=",
-							"-----END RSA PRIVATE KEY-----",
-							"EOF",
-							"```",
-							"",
-							"Then set the secret from the file.",
-							"",
-							"```bash frame=\"none\"",
-							"sst secret set Key -- \"$(cat tmp.txt)\"",
-							"```",
-							"",
-							"And make sure to delete the temp file.",
-						}, "\n"),
-					},
-					Args: []cli.Argument{
-						{
-							Name:     "name",
-							Required: true,
-							Description: cli.Description{
-								Short: "The name of the secret",
-								Long:  "The name of the secret.",
-							},
-						},
-						{
-							Name:     "value",
-							Required: false,
-							Description: cli.Description{
-								Short: "The value of the secret",
-								Long:  "The value of the secret.",
-							},
-						},
-					},
-					Examples: []cli.Example{
-						{
-							Content: "sst secret set StripeSecret 123456789",
-							Description: cli.Description{
-								Short: "Set the StripeSecret to 123456789",
-							},
-						},
-						{
-							Content: "sst secret set StripeSecret < tmp.txt",
-							Description: cli.Description{
-								Short: "Set the StripeSecret to contents of tmp.txt",
-							},
-						},
-						{
-							Content: "sst secret set StripeSecret productionsecret --stage production",
-							Description: cli.Description{
-								Short: "Set the StripeSecret in production",
-							},
-						},
-					},
-					Run: CmdSecretSet,
-				},
-				{
-					Name: "load",
-					Description: cli.Description{
-						Short: "Set multiple secrets from file",
-						Long: strings.Join([]string{
-							"Load all the secrets from a file and set them.",
-							"",
-							"```bash frame=\"none\"",
-							"sst secret load ./secrets.env",
-							"```",
-							"",
-							"The file needs to be in the _dotenv_ or bash format of key-value pairs.",
-							"",
-							"```sh title=\"secrets.env\"",
-							"KEY_1=VALUE1",
-							"KEY_2=VALUE2",
-							"```",
-							"",
-							"Optionally, set the secrets in a specific stage.",
-							"",
-							"```bash frame=\"none\"",
-							"sst secret load ./prod.env --stage production",
-							"```",
-							"",
-							"",
-						}, "\n"),
-					},
-					Args: []cli.Argument{
-						{
-							Name:     "file",
-							Required: true,
-							Description: cli.Description{
-								Short: "The file to load secrets from",
-								Long:  "The file to load the secrets from.",
-							},
-						},
-					},
-					Examples: []cli.Example{
-						{
-							Content: "sst secret load ./secrets.env",
-							Description: cli.Description{
-								Short: "Loads all secrets from the file",
-							},
-						},
-						{
-							Content: "sst secret load ./prod.env --stage production",
-							Description: cli.Description{
-								Short: "Set secrets for production",
-							},
-						},
-					},
-					Run: CmdSecretLoad,
-				},
-				{
-					Name: "remove",
-					Description: cli.Description{
-						Short: "Remove a secret",
-						Long: strings.Join([]string{
-							"Remove a secret.",
-							"",
-							"For example, remove the `sst.Secret` called `StripeSecret`.",
-							"",
-							"```bash frame=\"none\" frame=\"none\"",
-							"sst secret remove StripeSecret",
-							"```",
-							"",
-							"Optionally, remove a secret in a specific stage.",
-							"",
-							"```bash frame=\"none\" frame=\"none\"",
-							"sst secret remove StripeSecret --stage production",
-							"```",
-						}, "\n"),
-					},
-					Args: []cli.Argument{
-						{
-							Name:     "name",
-							Required: true,
-							Description: cli.Description{
-								Short: "The name of the secret",
-								Long:  "The name of the secret.",
-							},
-						},
-					},
-					Examples: []cli.Example{
-						{
-							Content: "sst secret remove StripeSecret",
-							Description: cli.Description{
-								Short: "Remove the StripeSecret",
-							},
-						},
-						{
-							Content: "sst secret remove StripeSecret --stage production",
-							Description: cli.Description{
-								Short: "Remove the StripeSecret in production",
-							},
-						},
-					},
-					Run: func(c *cli.Cli) error {
-						key := c.Positional(0)
-						p, err := c.InitProject()
-						if err != nil {
-							return err
-						}
-						defer p.Cleanup()
-						backend := p.Backend()
-						secrets, err := provider.GetSecrets(backend, p.App().Name, p.App().Stage)
-						if err != nil {
-							return util.NewReadableError(err, "Could not get secrets")
-						}
-
-						// check if the secret exists
-						if _, ok := secrets[key]; !ok {
-							return util.NewReadableError(nil, fmt.Sprintf("Secret \"%s\" does not exist for stage \"%s\"", key, p.App().Stage))
-						}
-
-						delete(secrets, key)
-						err = provider.PutSecrets(backend, p.App().Name, p.App().Stage, secrets)
-						if err != nil {
-							return util.NewReadableError(err, "Could not set secret")
-						}
-						url, _ := server.Discover(p.PathConfig(), p.App().Stage)
-						if url != "" {
-							dev.Deploy(c.Context, url)
-						}
-						ui.Success(fmt.Sprintf("Removed \"%s\" for stage \"%s\"", key, p.App().Stage))
-						return nil
-					},
-				},
-				{
-					Name: "list",
-					Description: cli.Description{
-						Short: "List all secrets",
-						Long: strings.Join([]string{
-							"Lists all the secrets.",
-							"",
-							"Optionally, list the secrets in a specific stage.",
-							"",
-							"```bash frame=\"none\" frame=\"none\"",
-							"sst secret list --stage production",
-							"```",
-						}, "\n"),
-					},
-					Examples: []cli.Example{
-						{
-							Content: "sst secret list --stage production",
-							Description: cli.Description{
-								Short: "List the secrets in production",
-							},
-						},
-					},
-					Run: CmdSecretList,
-				},
+				CmdSecretSet,
+				CmdSecretRemove,
+				CmdSecretLoad,
+				CmdSecretList,
 			},
 		},
 		{

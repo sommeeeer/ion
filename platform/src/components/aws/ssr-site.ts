@@ -216,7 +216,7 @@ export interface SsrSiteArgs extends BaseSsrSiteArgs {
   };
 }
 
-export function prepare(args: SsrSiteArgs, opts: ComponentResourceOptions) {
+export function prepare(parent: ComponentResource, args: SsrSiteArgs) {
   const sitePath = normalizeSitePath();
   const partition = normalizePartition();
   const region = normalizeRegion();
@@ -240,12 +240,11 @@ export function prepare(args: SsrSiteArgs, opts: ComponentResourceOptions) {
   }
 
   function normalizePartition() {
-    return getPartitionOutput(undefined, { provider: opts?.provider })
-      .partition;
+    return getPartitionOutput(undefined, { parent }).partition;
   }
 
   function normalizeRegion() {
-    return getRegionOutput(undefined, { provider: opts?.provider }).name;
+    return getRegionOutput(undefined, { parent }).name;
   }
 
   function checkSupportedRegion() {
@@ -345,7 +344,7 @@ export function createDevServer(
         environment: args.environment,
         permissions: args.permissions,
         link: args.link,
-        live: false,
+        dev: false,
       },
       { parent },
     ),
@@ -595,7 +594,7 @@ function handler(event) {
                   args.publish = true;
                 },
               },
-              live: false,
+              dev: false,
             },
             { provider: useProvider("us-east-1"), parent },
           );
@@ -703,7 +702,7 @@ function handler(event) {
               ...(layers ?? []),
             ]),
             url: true,
-            live: false,
+            dev: false,
           },
           { parent },
         ),
@@ -744,7 +743,7 @@ function handler(event) {
             ],
             ...props.function,
             url: true,
-            live: false,
+            dev: false,
             _skipMetadata: true,
           },
           { parent },
@@ -1032,7 +1031,7 @@ function handler(event) {
             handler: "index.handler",
             timeout: "900 seconds",
             memory: "128 MB",
-            live: false,
+            dev: false,
             environment: {
               FUNCTION_NAME: ssrFunctions[0].nodes.function.name,
               CONCURRENCY: output(args.warm).apply((warm) => warm.toString()),
